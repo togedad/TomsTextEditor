@@ -46,6 +46,7 @@ struct EditorConfig {
     int yScroll;
     int xScroll;
     EditorRow* rows;
+    int fileModified;
     struct termios orig_termios;
     
     char* filePath;
@@ -328,90 +329,39 @@ void editorInsertChar (char c) {
 	else if (line < 0) { return; } 
 	editorRowInsertChar(&E.rows[line], getCursorPositionInFileLine(), c);
 	if (E.cx <= E.rows[line].length) { E.cx++; }
+	
+	E.fileModified++;
 }
 
-/**** FILE IO ****/
+void editorRowDelChar(EditorRow *row, int at) {
+	if (at < 0 || at >= row->length) return;
+	memmove(&row->chars[at], &row->chars[at + 1], row->length - at);
+	row->length--;
+	row->chars = realloc(row->chars, row->length -1);
+	row->chars[row->length - 1] = 0;
+}
+
 /*
-#define MAX_LINE_LENGTH 150 //this is a masive overestimate so will need to be alterd at some point
-char* getNextLine (size_t* length, FILE* file) {
- 
-}   
+	-1 for left 1 for right and 0 for on the cursour
+	implemented this way for delete key and backspace as they behvae diffrently from eachother
 */
+void editorDeleteChar (short int direction) {
+	int pos;
+	int line = E.cy - HEADER_SIZE;
+	if (line >= E.numberOfRows || line < 0) {
+		return;
+	} 
+	else if (E.rows[line].length == 0) { die("need to implemnt a delete row function"); }
 
-void editorOpen (char* filePath) {
-	FILE *fp = fopen(filePath, "r");
+	if 	    (direction > 0) { direction =  1; }	
+	else if (direction < 0) { direction = -1; }
 	
-	char *line = NULL;
-	size_t lineCap = 0;
-	ssize_t lineLen = 0;
-	
-	free(E.filePath);
-	E.filePath = strdup(filePath);
-	E.filePathLength = strlen(E.filePath);
-	
-	if (!fp) { die("fopen"); }
+	pos = getCursorPositionInFileLine() + direction;
 
-	lineLen = getline(&line, &lineCap, fp);
-
-	while (lineLen != -1) {
-		while (lineLen > 0 && (line[lineLen - 1] == '\n' || line[lineLen - 1] == '\r')) {
-			lineLen--;
-		}
-			
-		editorAppendRow(line, lineLen);	
-		lineLen = getline(&line, &lineCap, fp);
-	}
-	
-	free(line);
-	fclose(fp);
-}
-
-//caller should free return value
-char* editorRowsToString (int* bufLength) {
-	int totalLength = 0;
-	int i;
-	
-	for (i = 0; i < E.numberOfRows; i++) {
-		totalLength += E.rows[i].length + 1; // "+ 1" is for the new line char	
-	}
-	
-	*bufLength = totalLength;
-	
-	char* buf = malloc(totalLength);
-	char* p = buf; // this is a pointer to where the next line will be added 
-	for (i = 0; i < E.numberOfRows; i++) {
-		memcpy(p, E.rows[i].chars, E.rows[i].length);
-		p += E.rows[i].length;
-		*p = '\n';
-		p++;
-		
-	}
-		
-	return buf;
-}
-
-void editorSave () {
-	if (E.filePath == NULL) return;
-	int len;
-	debugOutput("start save file");
-	char *buf = editorRowsToString(&len);
-	/*
-	0644 is the standard permissions you usually want for text files. 
-	It gives the owner of the file permission to read and write the file, 
-	and everyone else only gets permission to read the file.
-	*/
-	int fd = open(E.filePath, O_RDWR | O_CREAT, 0644); 
-	
-	debugOutput("open file");
-	
-	ftruncate(fd, len); //creates file to certain size
-	write(fd, buf, len);
-	
-	debugOutput("write file");
-	close(fd);
-	free(buf);
-	
-	debugOutput("close file");
+	if (pos < 0) { return; }
+	editorRowDelChar(&E.rows[line], pos);
+	E.cx  = (direction < 0) ? E.cx : E.cx - 1;
+	E.fileModified++;
 }
 
 /**** OUTPUTS ****/
@@ -550,6 +500,90 @@ void editorRefreshScreen () {
     abufFree(&buff);
 }
 
+/**** FILE IO ****/
+/*
+#define MAX_LINE_LENGTH 150 //this is a masive overestimate so will need to be alterd at some point
+char* getNextLine (size_t* length, FILE* file) {
+ 
+}   
+*/
+
+void editorOpen (char* filePath) {
+	FILE *fp = fopen(filePath, "r");
+	
+	char *line = NULL;
+	size_t lineCap = 0;
+	ssize_t lineLen = 0;
+	
+	free(E.filePath);
+	E.filePath = strdup(filePath);
+	E.filePathLength = strlen(E.filePath);
+	
+	if (!fp) { die("fopen"); }
+
+	lineLen = getline(&line, &lineCap, fp);
+
+	while (lineLen != -1) {
+		while (lineLen > 0 && (line[lineLen - 1] == '\n' || line[lineLen - 1] == '\r')) {
+			lineLen--;
+		}
+			
+		editorAppendRow(line, lineLen);	
+		lineLen = getline(&line, &lineCap, fp);
+	}
+	
+	free(line);
+	fclose(fp);
+}
+
+//caller should free return value
+char* editorRowsToString (int* bufLength) {
+	int totalLength = 0;
+	int i;
+	
+	for (i = 0; i < E.numberOfRows; i++) {
+		totalLength += E.rows[i].length + 1; // "+ 1" is for the new line char	
+	}
+	
+	*bufLength = totalLength;
+	
+	char* buf = malloc(totalLength);
+	char* p = buf; // this is a pointer to where the next line will be added 
+	for (i = 0; i < E.numberOfRows; i++) {
+		memcpy(p, E.rows[i].chars, E.rows[i].length);
+		p += E.rows[i].length;
+		*p = '\n';
+		p++;
+		
+	}
+		
+	return buf;
+}
+
+void editorSave () {
+	if (E.filePath == NULL) return;
+	int len;
+	char *buf = editorRowsToString(&len);
+	/*
+	0644 is the standard permissions you usually want for text files. 
+	It gives the owner of the file permission to read and write the file, 
+	and everyone else only gets permission to read the file.
+	*/
+	int fd = open(E.filePath, O_RDWR | O_CREAT, 0644); 
+	
+	if (fd != -1) {  
+	
+		if (ftruncate(fd, len) != -1) { //creates file to certain size
+			write(fd, buf, len);
+			close(fd);
+			editorSetStatusMessage("Saved file");
+			E.fileModified = 0;
+		}
+	}
+	
+	free(buf);
+}
+
 /**** INPUTS ****/
 void scrollScreenY (int offset) {
 	E.yScroll += offset;
@@ -622,7 +656,9 @@ void editorMoveCursor(int key) {
     }
 }
 
+#define QUIT_ATTEMPTS 5
 void editorProcessKeypress () {
+	static short int quitAttempts = QUIT_ATTEMPTS;  
     int c = editorKeyRead();
     
     switch (c) {
@@ -631,17 +667,24 @@ void editorProcessKeypress () {
     		break;
     		
 		case BACKSPACE:
+			editorDeleteChar(-1);
+			break;
 		case CTRL_KEY('h'):
 		case DELETE_KEY:
-			/* TODO */
+			editorDeleteChar(0);
 			break;
     
         case CTRL_KEY('q'):
-            //clear the screen
-            write(STDOUT_FILENO, "\x1b[2J", 4);
-            //puts curse in top left of screen
-            write(STDOUT_FILENO, "\x1b[1;1H", 6);
-            exit(0);
+        	if (quitAttempts > 0 && E.fileModified) {
+        		quitAttempts--;
+        		editorSetStatusMessage("WARNING!!! File has unsaved changes. Press Ctrl-Q %d more times to quit.", quitAttempts);
+        		return;
+        	} 
+			//clear the screen
+			write(STDOUT_FILENO, "\x1b[2J", 4);
+			//puts curse in top left of screen
+			write(STDOUT_FILENO, "\x1b[1;1H", 6);
+			exit(0);
             break;
     
 		case CTRL_KEY('s'):
@@ -672,6 +715,8 @@ void editorProcessKeypress () {
 			editorInsertChar(c);
 			break;
     }
+    
+    quitAttempts = QUIT_ATTEMPTS;
 }
 
 /**** INIT ****/
@@ -710,6 +755,7 @@ void initEditor () {
     E.xScroll      = 0;
     E.rows     = NULL;
     E.filePath = NULL;
+    E.fileModified = 0;
     
     E.statusMsg[0] = '\0';
   	E.statusMsgTime = 0;
@@ -729,8 +775,8 @@ int main (int argc, char* argv[]) {
         
     editorOpen(argv[1]);
     
-    debugOutput("open editor succses");
-    editorSetStatusMessage("HELP: Ctrl-Q = quit");
+    debugOutput("open save editor");
+    editorSetStatusMessage("HELP-Ctrl = Q | quit-Ctrl S to");
 
     /*
     reads 1 byte from the standard input untill there 

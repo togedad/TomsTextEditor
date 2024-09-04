@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <stdarg.h>
+#include <fcntl.h>
 
 #include <limits.h>
 
@@ -365,6 +366,54 @@ void editorOpen (char* filePath) {
 	fclose(fp);
 }
 
+//caller should free return value
+char* editorRowsToString (int* bufLength) {
+	int totalLength = 0;
+	int i;
+	
+	for (i = 0; i < E.numberOfRows; i++) {
+		totalLength += E.rows[i].length + 1; // "+ 1" is for the new line char	
+	}
+	
+	*bufLength = totalLength;
+	
+	char* buf = malloc(totalLength);
+	char* p = buf; // this is a pointer to where the next line will be added 
+	for (i = 0; i < E.numberOfRows; i++) {
+		memcpy(p, E.rows[i].chars, E.rows[i].length);
+		p += E.rows[i].length;
+		*p = '\n';
+		p++;
+		
+	}
+		
+	return buf;
+}
+
+void editorSave () {
+	if (E.filePath == NULL) return;
+	int len;
+	debugOutput("start save file");
+	char *buf = editorRowsToString(&len);
+	/*
+	0644 is the standard permissions you usually want for text files. 
+	It gives the owner of the file permission to read and write the file, 
+	and everyone else only gets permission to read the file.
+	*/
+	int fd = open(E.filePath, O_RDWR | O_CREAT, 0644); 
+	
+	debugOutput("open file");
+	
+	ftruncate(fd, len); //creates file to certain size
+	write(fd, buf, len);
+	
+	debugOutput("write file");
+	close(fd);
+	free(buf);
+	
+	debugOutput("close file");
+}
+
 /**** OUTPUTS ****/
 
 void editorSetStatusMessage (const char* fmt, ...) {
@@ -583,10 +632,9 @@ void editorProcessKeypress () {
     		
 		case BACKSPACE:
 		case CTRL_KEY('h'):
-		case DEL_KEY:
+		case DELETE_KEY:
 			/* TODO */
 			break;
-    
     
         case CTRL_KEY('q'):
             //clear the screen
@@ -595,6 +643,11 @@ void editorProcessKeypress () {
             write(STDOUT_FILENO, "\x1b[1;1H", 6);
             exit(0);
             break;
+    
+		case CTRL_KEY('s'):
+			editorSave();
+			break;       
+            
         case ARROW_UP:
         case ARROW_DOWN:
         case ARROW_LEFT:

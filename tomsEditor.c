@@ -349,12 +349,13 @@ void editorUpdateRow(EditorRow *row) { //used to update the lines that are actua
 	row->length = idx;
 }
 
-void editorAppendRow (char* str, size_t length) {
-	int at;
-	
+void editorInsertRow (int at, char* str, size_t length) {
+	if (at < 0 || at > E.numberOfRows) { return; }
+
 	E.rows = realloc(E.rows, sizeof(EditorRow) * (E.numberOfRows + 1));
-	
-	at = E.numberOfRows;
+	memmove(&E.rows[at + 1], &E.rows[at], sizeof(EditorRow) * (E.numberOfRows - at));
+
+	E.rows = realloc(E.rows, sizeof(EditorRow) * (E.numberOfRows + 1));
 	
 	E.rows[at].rawLength = length;
 	E.rows[at].rawChars = malloc(length + 1);
@@ -370,6 +371,25 @@ void editorAppendRow (char* str, size_t length) {
 
     debugOutput(E.rows[at].chars);
     debugOutput(E.rows[at].rawChars);
+}
+
+void editorInsertNewLine () {
+	int line = E.cy - HEADER_SIZE;
+	int at = getCursorPositionInRenderdFileLine(); //where the break in the line is 
+	if (at == 0) {
+		editorInsertRow(line, "", 0);
+	} else {
+	  EditorRow *row = &E.rows[line];
+	  editorInsertRow(line + 1, &row->rawChars[at], row->rawLength - at);
+	  
+	  row = &E.rows[line];
+	  row->rawLength = row->rawLength - (row->rawLength - at);
+	  row->rawChars[row->rawLength] = '\0';
+	  editorUpdateRow(row);
+	}
+
+	E.cy++;
+	E.cx = LINE_START_SIZE;
 }
 
 void editorRowAppendString (EditorRow* row, char* str, size_t length) {
@@ -410,7 +430,7 @@ void editorRowInsertChar (EditorRow* row, int at, int c) {
 void editorInsertChar (char c) {
 	int line = E.cy - HEADER_SIZE;
 	if (line == E.numberOfRows) {
-		editorAppendRow("", 0);
+		editorInsertRow(E.numberOfRows ,"", 0);
 	} 
 	else if (line > E.numberOfRows) { return; }
 	else if (line < 0) { return; } 
@@ -613,7 +633,7 @@ void editorOpen (char* filePath) {
 			lineLen--;
 		}
 			
-		editorAppendRow(line, lineLen);	
+		editorInsertRow(E.numberOfRows, line, lineLen);	
 		lineLen = getline(&line, &lineCap, fp);
 	}
 	
@@ -748,7 +768,7 @@ void editorProcessKeypress () {
     
     switch (c) {
     	case '\r': //enter key
-    		//to do 
+    		editorInsertNewLine();
     		break;
     		
     	case BACKSPACE:

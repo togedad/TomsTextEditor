@@ -31,11 +31,16 @@
 #define HEADER_SIZE 1 // this is the number of rows the header takes up at the top of the screen
 #define LINE_START_SIZE 2 //this describes how many charicters there are before the line is written! stuff like line numbers ect
 
+#define TAB_SIZE 8 
+
 /**** DATA ****/
 
 typedef struct EditorRow {
     int length;
     char* chars;
+    
+    int rawLength;
+    char* rawChars;
 } EditorRow;
 
 struct EditorConfig {
@@ -71,6 +76,9 @@ enum editorKey {
     DELETE_KEY,
     END
 };
+
+/**** PROTOTYPES ****/
+void editorSetStatusMessage (const char* fmt, ...);
 
 /**** TERMINAL ****/
 
@@ -263,7 +271,25 @@ int getCursorPosition (int* row, int* col) {
     return 0;
 }
 
-int getCursorPositionInFileLine () { return E.cx - LINE_START_SIZE; }
+// this gets the poistion not in screen space but in the raw line in the file, so this will compensate for tabs ect
+int getCursorPositionInRawFileLine () { 
+	int posInRender = E.cx - LINE_START_SIZE;
+	int line = E.cy - HEADER_SIZE;
+	int i = 0;
+	int total = 0;
+	EditorRow* row = &E.rows[line];
+	
+	while (i < row->rawLength && total < posInRender) {
+		total = (row->chars[i] == '\t') ? total + TAB_SIZE : total + 1;
+		i++;
+	}
+	 
+	return i;
+}
+
+int getCursorPositionInRenderdFileLine () { 
+	return E.cx - LINE_START_SIZE;
+}
 
 /**** APPEND BUFFER ****/
 /* this create a buffer to write into for the screen, then the screen is written
@@ -293,17 +319,76 @@ void abufFree (struct abuf* buf) {
 
 /**** EDITOR OPPERATIOS ****/
 
-void editorAppendRow (char* row, size_t length) {
-    int n = E.numberOfRows;
+void editorFreeRow(EditorRow *row) {
+  free(row->chars);
+  free(row->rawChars);
+}
 
-    E.numberOfRows++;
-    E.rows = realloc(E.rows, sizeof(EditorRow) * (E.numberOfRows)); 
+void editorUpdateRow(EditorRow *row) { //used to update the lines that are actually being maniputalted and rendered on screen
+	int j;
+	int idx  = 0;
+	int tabs = 0;
 
-    E.rows[n].length = length;
-    E.rows[n].chars = malloc(length + 1);
-    memcpy(E.rows[n].chars, row, length);
-    E.rows[n].chars[length] = '\0';
+ 	for (j = 0; j < row->rawLength; j++) {
+    	if (row->rawChars[j] == '\t') tabs++;
+	}
 
+	free(row->chars);
+	row->chars = malloc(row->rawLength + tabs*(TAB_SIZE -1) + 1); //1 is subtracted from tab size as row length allready includes that 1!
+
+	for (j = 0; j < row->rawLength; j++) {
+		if (row->rawChars[j] == '\t') {
+		    row->chars[idx++] = ' ';
+      		while (idx % 8 != 0) row->chars[idx++] = ' ';
+		} else { 
+			row->chars[idx++] = row->rawChars[j];
+		}
+	}
+	
+	row->chars[idx] = '\0';
+	row->length = idx;
+}
+
+void editorAppendRow (char* str, size_t length) {
+	int at;
+	
+	E.rows = realloc(E.rows, sizeof(EditorRow) * (E.numberOfRows + 1));
+	
+	at = E.numberOfRows;
+	
+	E.rows[at].rawLength = length;
+	E.rows[at].rawChars = malloc(length + 1);
+	memcpy(E.rows[at].rawChars, str, length);
+	E.rows[at].chars = '\0';
+	
+	E.rows[at].length = 0;
+	E.rows[at].chars = NULL;
+	
+	editorUpdateRow(&E.rows[at]);
+	 
+	E.numberOfRows++;
+
+    debugOutput(E.rows[at].chars);
+    debugOutput(E.rows[at].rawChars);
+}
+
+void editorRowAppendString (EditorRow* row, char* str, size_t length) {
+
+  row->rawChars = realloc(row->rawChars, row->rawLength + length + 1);
+  memcpy(&row->rawChars[row->rawLength], str, length);
+  row->rawLength += length;
+  row->rawChars[row->rawLength] = '\0';
+  E.fileModified++;
+  editorUpdateRow(row);
+}
+
+void editorDelRow(int rowIndex) {
+	if (rowIndex < 0 || rowIndex >= E.numberOfRows) { return; }
+	
+	editorFreeRow(&E.rows[rowIndex]);
+	memmove(&E.rows[rowIndex], &E.rows[rowIndex + 1], sizeof(EditorRow) * (E.numberOfRows - rowIndex - 1));
+	E.numberOfRows--;
+	//E.rows = realloc(E.rows, E.numberOfRows );
 }
 
 /*
@@ -312,12 +397,14 @@ void editorAppendRow (char* row, size_t length) {
 	"c" is the charictor to be insterted
 */
 void editorRowInsertChar (EditorRow* row, int at, int c) {
-	if (at < 0 || at > row->length) { at = row->length; }
+	if (at < 0 || at > row->rawLength) { at = row->rawLength; }
 	  
-	row->chars = realloc(row->chars, row->length + 2);
-	memmove(&row->chars[at + 1], &row->chars[at], row->length - at + 1);
-	row->chars[at] = c;
-	row->length++;
+	row->rawChars = realloc(row->rawChars, row->rawLength + 2);
+	memmove(&row->rawChars[at + 1], &row->rawChars[at], row->rawLength - at + 1);
+	row->rawChars[at] = c;
+	row->rawLength++;
+	
+	editorUpdateRow(row);
 }
 
 void editorInsertChar (char c) {
@@ -327,41 +414,40 @@ void editorInsertChar (char c) {
 	} 
 	else if (line > E.numberOfRows) { return; }
 	else if (line < 0) { return; } 
-	editorRowInsertChar(&E.rows[line], getCursorPositionInFileLine(), c);
+	editorRowInsertChar(&E.rows[line], getCursorPositionInRawFileLine(), c);
 	if (E.cx <= E.rows[line].length) { E.cx++; }
 	
 	E.fileModified++;
 }
 
-void editorRowDelChar(EditorRow *row, int at) {
-	if (at < 0 || at >= row->length) return;
-	memmove(&row->chars[at], &row->chars[at + 1], row->length - at);
-	row->length--;
-	row->chars = realloc(row->chars, row->length -1);
-	row->chars[row->length - 1] = 0;
+void editorRowDelChar(EditorRow* row, int at) {
+	if (at < 0 || at >= row->length) { return; }
+	memmove(&row->rawChars[at], &row->rawChars[at + 1], row->rawLength - at);
+	row->rawLength--;
+	row->rawChars = realloc(row->rawChars, row->rawLength);
+	
+	editorUpdateRow(row);
 }
 
-/*
-	-1 for left 1 for right and 0 for on the cursour
-	implemented this way for delete key and backspace as they behvae diffrently from eachother
-*/
-void editorDeleteChar (short int direction) {
-	int pos;
+void editorDeleteChar () {
 	int line = E.cy - HEADER_SIZE;
 	if (line >= E.numberOfRows || line < 0) {
 		return;
 	} 
-	else if (E.rows[line].length == 0) { die("need to implemnt a delete row function"); }
-
-	if 	    (direction > 0) { direction =  1; }	
-	else if (direction < 0) { direction = -1; }
-	
-	pos = getCursorPositionInFileLine() + direction;
-
-	if (pos < 0) { return; }
-	editorRowDelChar(&E.rows[line], pos);
-	E.cx  = (direction < 0) ? E.cx : E.cx - 1;
-	E.fileModified++;
+	else if (getCursorPositionInRenderdFileLine() < 0) {
+	    int newCx = E.rows[E.cy - 1 - HEADER_SIZE].length + LINE_START_SIZE - 1;
+	    
+    	editorRowAppendString(&E.rows[line - 1], E.rows[line].chars, E.rows[line].length);
+    	editorDelRow(E.cy - HEADER_SIZE);
+    	E.cy--;
+    	E.cx = newCx;
+    	
+    	
+    } else {
+		editorRowDelChar(&E.rows[line], getCursorPositionInRawFileLine());
+		E.fileModified++;
+		E.cx--;
+	}
 }
 
 /**** OUTPUTS ****/
@@ -451,7 +537,6 @@ void editorDrawRows (struct abuf* buff) {
 	  	abufAppend(buff, tempStr, tempStrLen);
 	  	len += tempStrLen;
 	  	
-	  	debugOutputInt(time(NULL) - E.statusMsgTime);
 	  	if (time(NULL) - E.statusMsgTime > STATUS_MESSAGE_LIFE_TIME) { editorSetStatusMessage("N/A"); }
 		
 		abufAppend(buff, " STATUS MESSAGE: ", 17);
@@ -474,7 +559,7 @@ int getCurrentLine () {
 
 char getCurrentSelctedChar () {
 	if (E.cx - LINE_START_SIZE > E.rows[getCurrentLine()].length) { return 0; }
-	return E.rows[getCurrentLine()].chars[getCursorPositionInFileLine()];
+	return E.rows[getCurrentLine()].chars[getCursorPositionInRawFileLine()];
 }
 
 void editorRefreshScreen () {
@@ -656,7 +741,7 @@ void editorMoveCursor(int key) {
     }
 }
 
-#define QUIT_ATTEMPTS 5
+#define QUIT_ATTEMPTS 3
 void editorProcessKeypress () {
 	static short int quitAttempts = QUIT_ATTEMPTS;  
     int c = editorKeyRead();
@@ -666,16 +751,16 @@ void editorProcessKeypress () {
     		//to do 
     		break;
     		
-		case BACKSPACE:
-			editorDeleteChar(-1);
-			break;
+    	case BACKSPACE:
 		case CTRL_KEY('h'):
+    		 E.cx--;
 		case DELETE_KEY:
-			editorDeleteChar(0);
+			editorDeleteChar();
+			E.cx++;
 			break;
     
         case CTRL_KEY('q'):
-        	if (quitAttempts > 0 && E.fileModified) {
+        	if (quitAttempts > 1 && E.fileModified) {
         		quitAttempts--;
         		editorSetStatusMessage("WARNING!!! File has unsaved changes. Press Ctrl-Q %d more times to quit.", quitAttempts);
         		return;

@@ -26,7 +26,7 @@
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define HEADER_MESSAGE "TOMS EDITOR WELCOME!"
 
-#define STATUS_MESSAGE_LIFE_TIME 5
+#define STATUS_MESSAGE_LIFE_TIME 3
 
 #define HEADER_SIZE 1 // this is the number of rows the header takes up at the top of the screen
 #define LINE_START_SIZE 2 //this describes how many charicters there are before the line is written! stuff like line numbers ect
@@ -79,6 +79,8 @@ enum editorKey {
 
 /**** PROTOTYPES ****/
 void editorSetStatusMessage (const char* fmt, ...);
+void editorRefreshScreen ();
+char* editorPrompt (char* prompt, void (*callback)(char *, int));
 
 /**** TERMINAL ****/
 
@@ -271,24 +273,45 @@ int getCursorPosition (int* row, int* col) {
     return 0;
 }
 
-// this gets the poistion not in screen space but in the raw line in the file, so this will compensate for tabs ect
-int getCursorPositionInRawFileLine () { 
-	int posInRender = E.cx - LINE_START_SIZE;
-	int line = E.cy - HEADER_SIZE;
-	int i = 0;
-	int total = 0;
-	EditorRow* row = &E.rows[line];
-	
-	while (i < row->rawLength && total < posInRender) {
-		total = (row->chars[i] == '\t') ? total + TAB_SIZE : total + 1;
-		i++;
-	}
-	 
-	return i;
+int getCurrentLineInFile () {
+	return E.cy - HEADER_SIZE;
 }
 
 int getCursorPositionInRenderdFileLine () { 
 	return E.cx - LINE_START_SIZE;
+}
+
+// this gets the poistion not in screen space but in the raw line in the file, so this will compensate for tabs ect
+int getCursorPositionInRawFileLine () { 
+	int i = 0;
+	int pos = getCursorPositionInRenderdFileLine();
+	int total = 0;
+	
+	EditorRow* row = &E.rows[getCurrentLineInFile()];
+	
+	while (total < pos && i < row->rawLength) {
+		total++;
+		if (row->rawChars[i] == '\t') { total += TAB_SIZE - 1; }
+		i++;
+	}
+	
+	return i;
+}
+
+//takes an index in the raw file and coverts it to screen space
+int getScreenSpaceFromRawLinePosition (int line, int index) { 
+	int i = 0;
+	int total = 0;
+	
+	EditorRow* row = &E.rows[line];
+	
+	while (i < row->rawLength && i < index) {
+		total = (row->rawChars[i] == '\t') ? total + TAB_SIZE : total + 1;
+		i++;
+	}
+	//total--;
+	 
+	return total + LINE_START_SIZE;
 }
 
 /**** APPEND BUFFER ****/
@@ -374,7 +397,7 @@ void editorInsertRow (int at, char* str, size_t length) {
 }
 
 void editorInsertNewLine () {
-	int line = E.cy - HEADER_SIZE;
+	int line = getCurrentLineInFile();
 	int at = getCursorPositionInRenderdFileLine(); //where the break in the line is 
 	if (at == 0) {
 		editorInsertRow(line, "", 0);
@@ -428,20 +451,22 @@ void editorRowInsertChar (EditorRow* row, int at, int c) {
 }
 
 void editorInsertChar (char c) {
-	int line = E.cy - HEADER_SIZE;
+	int line = getCurrentLineInFile();
 	if (line == E.numberOfRows) {
 		editorInsertRow(E.numberOfRows ,"", 0);
 	} 
 	else if (line > E.numberOfRows) { return; }
 	else if (line < 0) { return; } 
-	editorRowInsertChar(&E.rows[line], getCursorPositionInRawFileLine(), c);
-	if (E.cx <= E.rows[line].length) { E.cx++; }
 	
+	editorRowInsertChar(&E.rows[line], getCursorPositionInRawFileLine(), c);
+	E.cx++;
 	E.fileModified++;
 }
 
 void editorRowDelChar(EditorRow* row, int at) {
 	if (at < 0 || at >= row->length) { return; }
+	
+	at = getCursorPositionInRawFileLine();
 	memmove(&row->rawChars[at], &row->rawChars[at + 1], row->rawLength - at);
 	row->rawLength--;
 	row->rawChars = realloc(row->rawChars, row->rawLength);
@@ -450,7 +475,7 @@ void editorRowDelChar(EditorRow* row, int at) {
 }
 
 void editorDeleteChar () {
-	int line = E.cy - HEADER_SIZE;
+	int line = getCurrentLineInFile();
 	if (line >= E.numberOfRows || line < 0) {
 		return;
 	} 
@@ -666,7 +691,11 @@ char* editorRowsToString (int* bufLength) {
 }
 
 void editorSave () {
-	if (E.filePath == NULL) return;
+	if (E.filePath == NULL) {
+		E.filePath = editorPrompt("Save as: %s (ESC to leave)", NULL);
+		if (E.filePath == NULL) { return; }
+	}
+	
 	int len;
 	char *buf = editorRowsToString(&len);
 	/*
@@ -689,7 +718,123 @@ void editorSave () {
 	free(buf);
 }
 
+/**** FIND ****/
+
+void editorFindCallback(char *query, int key) {
+ 	int i;
+ 	
+	static int lastMatch = -1;
+	static int direction  =  1;
+	
+	int current;
+	
+ 	if (key == '\r' || key == '\x1b') {
+		lastMatch = -1;
+		direction = 1;
+		return;
+	} else if (key == ARROW_RIGHT || key == ARROW_DOWN) {
+		debugOutput("find right");
+		direction = 1;
+	} else if (key == ARROW_LEFT || key == ARROW_UP) {
+		direction = -1;
+	} else {
+		lastMatch = -1;
+		direction = 1;
+	}
+	
+	if (lastMatch == -1) { direction = 1; }
+	current = lastMatch;
+	for (i = 0; i < E.numberOfRows; i++) {
+		char* match;
+		EditorRow* row;
+	
+		current += direction;
+		if (current == -1) { current = E.numberOfRows - 1; }
+		else if (current == E.numberOfRows) { current = 0; }
+	
+		row = &E.rows[current];
+		match = strstr(row->chars, query); //used to find sub string
+		if (match) {
+			lastMatch = current;
+			E.cy = HEADER_SIZE;
+			E.cx = getScreenSpaceFromRawLinePosition(i, match - row->chars);
+      		E.yScroll = current;
+      		break;
+		}		
+	} 
+	
+	return;
+}
+
+void editorFind () {
+	int saved_cx = E.cx;
+	int saved_cy = E.cy;
+	int saved_yScroll = E.yScroll;
+	int saved_xScroll = E.xScroll;
+	char* query = editorPrompt("Search: %s (ESC to leave)", editorFindCallback);	
+	
+	if (query) {
+		free(query);
+	} else {
+		E.cy = saved_cx;
+		E.cx = saved_cy;
+		E.xScroll = saved_yScroll;
+		E.yScroll = saved_xScroll;
+	}
+}
+
+
 /**** INPUTS ****/
+
+/*
+	prompt is a string 
+	
+	the call back is a fucntion that is passed in that is called everytime a key is pressed
+	
+	WILL RETURN A STRING!
+*/
+char* editorPrompt (char* prompt, void (*callback)(char *, int)) {
+	size_t bufferSize = 128;
+	char* buffer = malloc(bufferSize);
+	
+	size_t bufferLength = 0;
+	buffer[0] = '\0';
+	
+	while (1) {
+		editorSetStatusMessage(prompt, buffer);
+		editorRefreshScreen();
+	
+		int c = editorKeyRead();
+		debugOutputInt(c);
+    	
+    	if (c == '\x1b') {
+    		editorSetStatusMessage("");
+    		if (callback) callback(buffer, bufferLength);
+    		free(buffer);
+    		return NULL;
+    	} else if (c == '\r') {
+			if (bufferLength != 0) {
+				editorSetStatusMessage("");
+				if (callback) callback(buffer, bufferLength);
+				return buffer;
+			}
+		} else if (c == BACKSPACE) {
+			if (bufferLength == 0) { continue; }
+			buffer[--bufferLength] = '\0';
+		} else if (!iscntrl(c) && c < 128) {
+			if (bufferLength == bufferSize) {
+				bufferSize *= 2;
+				buffer = realloc(buffer, bufferSize);
+			}
+			
+			buffer[bufferLength++] = c;
+			buffer[bufferLength] = '\0';
+		}
+		
+		if (callback) callback(buffer, c);
+	}	
+}
+
 void scrollScreenY (int offset) {
 	E.yScroll += offset;
 	if (E.yScroll < 0				) { E.yScroll = 0; }
@@ -704,6 +849,7 @@ void scrollScreenX (int offset) {
 
 void editorMoveCursor(int key) {
 	int lineLength = E.rows[getCurrentLine()].length;
+	int line = getCurrentLineInFile();
 
     switch (key) {
         case ARROW_LEFT:
@@ -738,14 +884,17 @@ void editorMoveCursor(int key) {
         	}
         	break;
         case END:
-        	E.cx = lineLength - 1 + LINE_START_SIZE;
-        	return;
+        	E.cx = lineLength + LINE_START_SIZE;
+			break;
     }
+
+	
 
     if (E.cx < 0) { 
     	E.cx = 0;
     	scrollScreenX(-1);
     }
+    
     if (E.cy < 0) { 
     	E.cy = 0;
     	scrollScreenY(-1);
@@ -755,9 +904,17 @@ void editorMoveCursor(int key) {
     	E.cx = E.screenCols;
     	scrollScreenX(1);
     }
+    
     if (E.cy > E.screenRows) { 
     	E.cy = E.screenRows;
     	scrollScreenY(1);
+    }
+    
+    line++;
+    line = getCurrentLineInFile();
+	if (getCursorPositionInRenderdFileLine() >= E.rows[line].length) { 
+		lineLength = E.rows[getCurrentLine()].length;
+    	E.cx = lineLength + LINE_START_SIZE;
     }
 }
 
@@ -791,10 +948,12 @@ void editorProcessKeypress () {
 			write(STDOUT_FILENO, "\x1b[1;1H", 6);
 			exit(0);
             break;
-    
 		case CTRL_KEY('s'):
 			editorSave();
 			break;       
+		case CTRL_KEY('f'):
+			editorFind();
+			break;
             
         case ARROW_UP:
         case ARROW_DOWN:
@@ -874,14 +1033,14 @@ int main (int argc, char* argv[]) {
     debugOutput("enabled raw mode");
     atexit(dissableRawMode);
     
-    if (argc < 2) {
-        die("No file given so closed program");
+    if (argc > 1) {
+        editorOpen(argv[1]);//die("No file given so closed program");
+    } else {
+    	editorInsertRow(E.numberOfRows, "No File Give New File Made", 27);	
     }
-        
-    editorOpen(argv[1]);
     
     debugOutput("open save editor");
-    editorSetStatusMessage("HELP-Ctrl = Q | quit-Ctrl S to");
+    editorSetStatusMessage("HELP-Ctrl = Q | quit-Ctrl S to | Ctrl-F = find");
 
     /*
     reads 1 byte from the standard input untill there 

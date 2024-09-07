@@ -274,7 +274,7 @@ int getCursorPosition (int* row, int* col) {
 }
 
 int getCurrentLineInFile () {
-	return E.cy - HEADER_SIZE;
+	return E.cy + E.yScroll - HEADER_SIZE;
 }
 
 int getCursorPositionInRenderdFileLine () { 
@@ -546,14 +546,23 @@ void editorDrawRows (struct abuf* buff) {
 		abufAppend(buff, "~ ", LINE_START_SIZE);
   		  
         if (lineNumber < E.numberOfRows) {    
+            char* c;
+            int i;
             int len = E.rows[lineNumber].length - E.xScroll;
             if (len > E.screenCols) { len = E.screenCols - LINE_START_SIZE; } //compoensate for the start of the line e.g. line numbers
+            if (len < 0) { continue; }
             
-            if (len > 0) {
-            	abufAppend(buff, &E.rows[lineNumber].chars[E.xScroll], len);
-        	}
-        	
-        	
+            c = &E.rows[lineNumber].chars[E.xScroll];
+            
+            for (i = 0; i < len; i++) {
+            	if (isdigit(c[i])){
+					abufAppend(buff, "\x1b[31m", 5);
+					abufAppend(buff, &c[i], 1);
+					abufAppend(buff, "\x1b[39m", 5);
+            	} else {
+					abufAppend(buff, &c[i], 1);
+				}   
+			}         
         }
         
         abufAppend(buff, "\r\n", 2);

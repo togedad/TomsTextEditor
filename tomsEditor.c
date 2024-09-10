@@ -36,11 +36,17 @@
 /**** DATA ****/
 
 typedef struct EditorRow {
+	//these are the charictors that are acutally renderd on screen
     int length;
     char* chars;
-    
-    int rawLength;
+    // raw is the actual value in the file 
+    int rawLength; 
     char* rawChars;
+    /*
+    	each char in hl (meaning highlight) corrosponds to a cahr in the array chars!
+    	shows if that char is in a string, number ect
+    */
+    unsigned char* hl;
 } EditorRow;
 
 struct EditorConfig {
@@ -75,6 +81,12 @@ enum editorKey {
     PAGE_DOWN,
     DELETE_KEY,
     END
+};
+
+enum editorHighlight {
+  HL_NORMAL = 0,
+  HL_NUMBER,
+  HL_MATCH
 };
 
 /**** PROTOTYPES ****/
@@ -345,9 +357,34 @@ void abufFree (struct abuf* buf) {
 void editorFreeRow(EditorRow *row) {
   free(row->chars);
   free(row->rawChars);
+  free(row->hl);
 }
 
-void editorUpdateRow(EditorRow *row) { //used to update the lines that are actually being maniputalted and rendered on screen
+void editorUpdateRowSyntax (EditorRow* row) {
+	int i;
+	
+	row->hl = realloc(row->hl, row->length);
+  	memset(row->hl, HL_NORMAL, row->length);
+  	
+  	for (i = 0; i < row->length; i++) {
+  		char c = row->chars[i];
+  	
+  		if (isdigit(c)) {
+  			row->hl[i] = HL_NUMBER;
+  		}	
+  	}
+} 
+
+int editorSyntaxToColor(int hl) {
+ 	switch (hl) {
+		case HL_NUMBER: return 31;
+		case HL_MATCH:  return 34;
+	
+		default: return 37;
+	}
+}
+
+void editorUpdateRow (EditorRow* row) { //used to update the lines that are actually being maniputalted and rendered on screen
 	int j;
 	int idx  = 0;
 	int tabs = 0;
@@ -370,6 +407,8 @@ void editorUpdateRow(EditorRow *row) { //used to update the lines that are actua
 	
 	row->chars[idx] = '\0';
 	row->length = idx;
+	
+	editorUpdateRowSyntax(row);
 }
 
 void editorInsertRow (int at, char* str, size_t length) {
@@ -387,6 +426,8 @@ void editorInsertRow (int at, char* str, size_t length) {
 	
 	E.rows[at].length = 0;
 	E.rows[at].chars = NULL;
+	
+	E.rows[at].hl = NULL;
 	
 	editorUpdateRow(&E.rows[at]);
 	 
@@ -547,21 +588,39 @@ void editorDrawRows (struct abuf* buff) {
   		  
         if (lineNumber < E.numberOfRows) {    
             char* c;
+            unsigned char* hl;
             int i;
             int len = E.rows[lineNumber].length - E.xScroll;
+            
+            int currentColour = -1;
+            
             if (len > E.screenCols) { len = E.screenCols - LINE_START_SIZE; } //compoensate for the start of the line e.g. line numbers
             if (len < 0) { continue; }
             
-            c = &E.rows[lineNumber].chars[E.xScroll];
-            
+            c  = &E.rows[lineNumber].chars[E.xScroll];
+			hl = &E.rows[lineNumber].hl[E.xScroll];			
+			            
             for (i = 0; i < len; i++) {
-            	if (isdigit(c[i])){
-					abufAppend(buff, "\x1b[31m", 5);
+            	if (hl[i] == HL_NORMAL) {
+            		if (currentColour == -1) {
+						abufAppend(buff, "\x1b[39m", 5);
+						currentColour = -1;
+					}
 					abufAppend(buff, &c[i], 1);
-					abufAppend(buff, "\x1b[39m", 5);
             	} else {
+            		int color = editorSyntaxToColor(hl[i]);
+            		if (color != currentColour) {
+            		
+            			currentColour = color;
+            		}
+            		
+            		char buf[16];
+            		int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+            		abufAppend(buff, buf, clen);
 					abufAppend(buff, &c[i], 1);
-				}   
+				}  
+				
+				abufAppend(buff, "\x1b[39m", 5); 
 			}         
         }
         
@@ -735,7 +794,16 @@ void editorFindCallback(char *query, int key) {
 	static int lastMatch = -1;
 	static int direction  =  1;
 	
+	static int savedHlLine;
+	static char* savedHl;
+	
 	int current;
+	
+	if (savedHlLine) {
+		memcpy(E.rows[savedHlLine].hl, savedHl, E.rows[savedHlLine].length); //copies the saved highlighting data back into so its correct colours
+    	free(savedHl);
+    	savedHl = NULL;
+	}
 	
  	if (key == '\r' || key == '\x1b') {
 		lastMatch = -1;
@@ -763,11 +831,18 @@ void editorFindCallback(char *query, int key) {
 	
 		row = &E.rows[current];
 		match = strstr(row->chars, query); //used to find sub string
+		
 		if (match) {
 			lastMatch = current;
 			E.cy = HEADER_SIZE;
 			E.cx = getScreenSpaceFromRawLinePosition(i, match - row->chars);
       		E.yScroll = current;
+
+			savedHlLine = current;
+			savedHl = malloc(row->length);
+			memcpy(savedHl, row->hl, row->length);
+      		
+			memset(&row->hl[match - row->chars], HL_MATCH, strlen(query));
       		break;
 		}		
 	} 
